@@ -144,10 +144,10 @@
    ============================================================ */
 const REPORT_CSS = `
 .report{background:#FFFFFF;border:1px solid #D8DFE6;border-radius:10px;overflow:hidden}
-.report-head{background:#16202B;color:#FFFFFF;padding:22px 26px;display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap}
+.report-head{background:#23147F;color:#FFFFFF;padding:22px 26px;display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap}
 .report-head h2{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em}
-.report-head .sub{margin:5px 0 0;font-size:13px;color:#AFBCC9}
-.report-head .stamp{font-size:12.5px;color:#AFBCC9;text-align:right;line-height:1.7}
+.report-head .sub{margin:5px 0 0;font-size:13px;color:#C2BAEA}
+.report-head .stamp{font-size:12.5px;color:#C2BAEA;text-align:right;line-height:1.7}
 
 .tallies{display:flex;flex-wrap:wrap;border-bottom:1px solid #D8DFE6;background:#F7F9FB}
 .tally{flex:1 1 150px;padding:18px 26px;border-right:1px solid #E4E9EE}
@@ -196,7 +196,7 @@ td.attach .none{color:#9AA7B4}
 @media print{
   body{background:#fff}
   .report{border:0}
-  .report-head{background:#fff;color:#16202B;border-bottom:2px solid #16202B}
+  .report-head{background:#fff;color:#23147F;border-bottom:2px solid #23147F}
   .report-head .sub,.report-head .stamp{color:#5C6B7A}
   table.tasks tbody tr{page-break-inside:avoid}
   thead{display:table-header-group}
@@ -296,12 +296,19 @@ function buildLinkMap(ws){
 }
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
-function fmtDate(v){
-  if(v instanceof Date && !isNaN(v)){
-    const d = String(v.getDate()).padStart(2, "0");
-    return d + "-" + MONTHS[v.getMonth()] + "-" + String(v.getFullYear()).slice(-2);
+
+// Prefer whatever Excel itself displays in the cell, so 4-Sep-26 stays 4-Sep-26
+// and 04/09/2026 stays 04/09/2026. Only fall back to building the string when the
+// cell carries no display text — and use UTC getters there, because the underlying
+// timestamp is UTC midnight and local getters shift the day west of UTC.
+function cellDate(display, typed){
+  const shown = String(display == null ? "" : display).trim();
+  if(shown) return shown;
+  if(typed instanceof Date && !isNaN(typed)){
+    const d = String(typed.getUTCDate()).padStart(2, "0");
+    return d + "-" + MONTHS[typed.getUTCMonth()] + "-" + String(typed.getUTCFullYear()).slice(-2);
   }
-  return String(v == null ? "" : v).trim();
+  return "";
 }
 
 /* status buckets */
@@ -343,7 +350,7 @@ function parseSheet(ws){
 
     const rec = {
       sno: val("sno") || String(rows.length + 1),
-      reportedOn: map.reportedOn === undefined ? "" : fmtDate(typed[map.reportedOn] || line[map.reportedOn]),
+      reportedOn: map.reportedOn === undefined ? "" : cellDate(line[map.reportedOn], typed[map.reportedOn]),
       project: val("project"),
       section: val("section"),
       taskName: val("taskName"),
