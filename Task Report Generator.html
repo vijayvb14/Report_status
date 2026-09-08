@@ -1,0 +1,645 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Report Builder</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root{
+    --ink:#16202B;
+    --paper:#FFFFFF;
+    --canvas:#E9EDF1;
+    --rule:#D8DFE6;
+    --muted:#5C6B7A;
+    --accent:#1F5FA8;
+    --st-open:#B45309;
+    --st-progress:#1F5FA8;
+    --st-done:#15803D;
+    --st-hold:#64748B;
+    --st-reopen:#B91C1C;
+  }
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{
+    background:var(--canvas);
+    color:var(--ink);
+    font-family:"Inter","Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+    font-size:15px;
+    line-height:1.5;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1400px;margin:0 auto;padding:28px 20px 64px}
+
+  /* ---------- tool chrome ---------- */
+  .tool-head{display:flex;align-items:baseline;gap:14px;flex-wrap:wrap;margin-bottom:18px}
+  .tool-head h1{font-size:20px;font-weight:650;letter-spacing:-0.01em;margin:0}
+  .tool-head p{margin:0;color:var(--muted);font-size:13.5px}
+
+  .drop{
+    background:var(--paper);
+    border:1.5px dashed var(--rule);
+    border-radius:10px;
+    padding:44px 24px;
+    text-align:center;
+    transition:border-color .15s, background .15s;
+  }
+  .drop.hot{border-color:var(--accent);background:#F3F7FC}
+  .drop h2{margin:0 0 6px;font-size:17px;font-weight:600}
+  .drop p{margin:0 0 18px;color:var(--muted);font-size:13.5px}
+  .drop .hint{margin-top:16px;font-size:12.5px;color:var(--muted)}
+
+  button,.btn{
+    font:inherit;font-size:13.5px;font-weight:550;
+    border:1px solid var(--rule);background:var(--paper);color:var(--ink);
+    padding:8px 14px;border-radius:7px;cursor:pointer;
+  }
+  button:hover,.btn:hover{border-color:#B9C4CF}
+  button:focus-visible,.btn:focus-visible,select:focus-visible,input:focus-visible{
+    outline:2px solid var(--accent);outline-offset:2px
+  }
+  button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+  button.primary:hover{background:#194E8A;border-color:#194E8A}
+  button.ghost{background:transparent}
+
+  .bar{
+    background:var(--paper);border:1px solid var(--rule);border-radius:10px;
+    padding:14px 16px;margin-bottom:18px;
+    display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  }
+  .bar .file{font-size:13.5px;color:var(--muted);margin-right:auto}
+  .bar .file strong{color:var(--ink);font-weight:600}
+  .filters{
+    background:var(--paper);border:1px solid var(--rule);border-radius:10px;
+    padding:14px 16px;margin-bottom:18px;
+    display:flex;gap:12px;align-items:center;flex-wrap:wrap;
+  }
+  .filters label{display:flex;flex-direction:column;gap:5px;font-size:12px;color:var(--muted)}
+  .filters select,.filters input{
+    font:inherit;font-size:13.5px;color:var(--ink);
+    border:1px solid var(--rule);border-radius:7px;padding:7px 10px;background:var(--paper);
+    min-width:170px;
+  }
+  .filters input{min-width:260px}
+  .count{margin-left:auto;font-size:13px;color:var(--muted)}
+
+  .err{
+    background:#FDF2F2;border:1px solid #F0C6C6;color:#8A1F1F;
+    border-radius:8px;padding:12px 14px;margin-bottom:18px;font-size:13.5px;
+  }
+  .hidden{display:none !important}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="tool-head">
+    <h1>Task Report Builder</h1>
+    <p>Turn a task-list spreadsheet into a shareable HTML report. Attachment hyperlinks are carried across.</p>
+  </div>
+
+  <div id="error" class="err hidden"></div>
+
+  <section id="dropzone" class="drop">
+    <h2>Drop your task list here</h2>
+    <p>.xlsx, .xlsm, .xls or .csv — the sheet with S.No, Project, Task Name, Status and Attachment columns.</p>
+    <button class="primary" id="pickBtn">Choose file</button>
+    <button class="ghost" id="sampleBtn">Try it with sample data</button>
+    <input type="file" id="fileInput" accept=".xlsx,.xlsm,.xls,.csv" hidden>
+    <div class="hint">Everything runs in your browser. The file is never uploaded anywhere.</div>
+  </section>
+
+  <section id="controls" class="hidden">
+    <div class="bar">
+      <div class="file">Source: <strong id="fileName">—</strong> <span id="sheetWrap"></span></div>
+      <button id="downloadBtn" class="primary">Download report</button>
+      <button id="printBtn">Print / Save as PDF</button>
+      <button id="resetBtn" class="ghost">Load another file</button>
+    </div>
+
+    <div class="filters">
+      <label>Search
+        <input type="text" id="q" placeholder="Task, description, section…">
+      </label>
+      <label>Project
+        <select id="fProject"><option value="">All projects</option></select>
+      </label>
+      <label>Status
+        <select id="fStatus"><option value="">All statuses</option></select>
+      </label>
+      <label>Ticket nature
+        <select id="fNature"><option value="">All natures</option></select>
+      </label>
+      <div class="count" id="visibleCount"></div>
+    </div>
+  </section>
+
+  <div id="reportHost"></div>
+</div>
+
+<script>
+/* ============================================================
+   Report styling — shared by the on-screen preview and the
+   downloaded standalone file, so both look identical.
+   ============================================================ */
+const REPORT_CSS = `
+.report{background:#FFFFFF;border:1px solid #D8DFE6;border-radius:10px;overflow:hidden}
+.report-head{background:#16202B;color:#FFFFFF;padding:22px 26px;display:flex;justify-content:space-between;align-items:flex-end;gap:20px;flex-wrap:wrap}
+.report-head h2{margin:0;font-size:20px;font-weight:600;letter-spacing:-0.01em}
+.report-head .sub{margin:5px 0 0;font-size:13px;color:#AFBCC9}
+.report-head .stamp{font-size:12.5px;color:#AFBCC9;text-align:right;line-height:1.7}
+
+.tallies{display:flex;flex-wrap:wrap;border-bottom:1px solid #D8DFE6;background:#F7F9FB}
+.tally{flex:1 1 150px;padding:18px 26px;border-right:1px solid #E4E9EE}
+.tally:last-child{border-right:0}
+.tally .n{font-size:26px;font-weight:650;line-height:1.1;font-variant-numeric:tabular-nums}
+.tally .k{font-size:12.5px;color:#5C6B7A;margin-top:3px}
+.tally.open .n{color:#B45309}
+.tally.progress .n{color:#1F5FA8}
+.tally.done .n{color:#15803D}
+
+.table-scroll{overflow-x:auto}
+table.tasks{border-collapse:collapse;width:100%;font-size:13.5px}
+table.tasks th{
+  text-align:left;font-weight:600;font-size:12.5px;color:#41505F;
+  background:#F7F9FB;padding:11px 14px;border-bottom:1px solid #D8DFE6;white-space:nowrap;
+}
+table.tasks td{padding:12px 14px;border-bottom:1px solid #EDF1F5;vertical-align:top}
+table.tasks tbody tr:last-child td{border-bottom:0}
+table.tasks tbody tr:hover td{background:#F9FBFD}
+td.sno{font-variant-numeric:tabular-nums;color:#5C6B7A;width:52px;border-left:3px solid transparent}
+td.date{white-space:nowrap;color:#41505F}
+td.task{font-weight:550;min-width:200px;max-width:280px}
+td.desc{color:#41505F;min-width:260px;max-width:420px}
+td.section{white-space:nowrap}
+tr.st-open td.sno{border-left-color:#B45309}
+tr.st-progress td.sno{border-left-color:#1F5FA8}
+tr.st-done td.sno{border-left-color:#15803D}
+tr.st-hold td.sno{border-left-color:#64748B}
+tr.st-reopen td.sno{border-left-color:#B91C1C}
+
+.chips{display:flex;flex-wrap:wrap;gap:4px;min-width:150px}
+.chip{background:#EEF2F6;color:#41505F;border-radius:4px;padding:2px 7px;font-size:11.5px;white-space:nowrap}
+.badge{display:inline-block;border-radius:999px;padding:3px 11px;font-size:11.5px;font-weight:600;white-space:nowrap;border:1px solid}
+.b-open{color:#8A4308;background:#FDF3E7;border-color:#EFD5B4}
+.b-progress{color:#194E8A;background:#EDF4FC;border-color:#C6DBF2}
+.b-done{color:#116233;background:#EDF7F0;border-color:#BFE2CB}
+.b-hold{color:#475569;background:#F1F4F7;border-color:#D5DDE5}
+.b-reopen{color:#8F1616;background:#FDF1F1;border-color:#EFC9C9}
+.nature{display:inline-block;border-radius:4px;padding:2px 8px;font-size:11.5px;background:#EEF2F6;color:#41505F;white-space:nowrap}
+td.attach a{color:#1F5FA8;text-decoration:none;font-weight:550;border-bottom:1px solid rgba(31,95,168,.3)}
+td.attach a:hover{border-bottom-color:#1F5FA8}
+td.attach .none{color:#9AA7B4}
+.empty{padding:44px 26px;text-align:center;color:#5C6B7A;font-size:14px}
+.report-foot{padding:12px 26px;border-top:1px solid #D8DFE6;background:#F7F9FB;font-size:12px;color:#5C6B7A}
+
+@media print{
+  body{background:#fff}
+  .report{border:0}
+  .report-head{background:#fff;color:#16202B;border-bottom:2px solid #16202B}
+  .report-head .sub,.report-head .stamp{color:#5C6B7A}
+  table.tasks tbody tr{page-break-inside:avoid}
+  thead{display:table-header-group}
+}
+`;
+
+/* ============================================================
+   State
+   ============================================================ */
+let WORKBOOK = null;
+let ROWS = [];          // canonical rows
+let EXTRA_COLS = [];    // any unrecognised columns, preserved
+let SOURCE_NAME = "";
+
+/* ============================================================
+   Column mapping
+   ============================================================ */
+const FIELDS = [
+  { key:"sno",        label:"S.No",          aliases:["sno","sn","sno.","slno","serialno","srno","no","#","id"] },
+  { key:"reportedOn", label:"Reported On",   aliases:["reportedon","reporteddate","date","raisedon","createdon","reported"] },
+  { key:"project",    label:"Project",       aliases:["project","projects","site","sites","application"] },
+  { key:"section",    label:"Section",       aliases:["section","module","page","area","component"] },
+  { key:"taskName",   label:"Task Name",     aliases:["taskname","task","title","summary","issue","subject"] },
+  { key:"description",label:"Description",   aliases:["description","details","detail","remarks","comments","observation"] },
+  { key:"ticketNature",label:"Ticket Nature",aliases:["ticketnature","nature","type","tickettype","category","severity"] },
+  { key:"status",     label:"Status",        aliases:["status","state","currentstatus"] },
+  { key:"attachment", label:"Attachment",    aliases:["attachment","attachments","link","links","viewlink","evidence","screenshot","reference","url"] }
+];
+
+const norm = s => String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]/g, "");
+
+function mapHeaders(headerRow){
+  const map = {}, used = new Set();
+  headerRow.forEach((h, i) => {
+    const n = norm(h);
+    if(!n) return;
+    for(const f of FIELDS){
+      if(map[f.key] !== undefined) continue;
+      if(f.aliases.includes(n)){ map[f.key] = i; used.add(i); return; }
+    }
+  });
+  // second pass: loose contains-match for anything still unmapped
+  headerRow.forEach((h, i) => {
+    if(used.has(i)) return;
+    const n = norm(h);
+    if(!n) return;
+    for(const f of FIELDS){
+      if(map[f.key] !== undefined) continue;
+      if(f.aliases.some(a => a.length > 3 && (n.includes(a) || a.includes(n)))){
+        map[f.key] = i; used.add(i); return;
+      }
+    }
+  });
+  const extras = [];
+  headerRow.forEach((h, i) => {
+    if(!used.has(i) && String(h || "").trim()) extras.push({ index:i, label:String(h).trim() });
+  });
+  return { map, extras };
+}
+
+function findHeaderRow(grid){
+  const strong = ["taskname","task","status","project","sno","description"];
+  for(let r = 0; r < Math.min(grid.length, 25); r++){
+    const hits = grid[r].filter(c => strong.includes(norm(c))).length;
+    if(hits >= 2) return r;
+  }
+  return 0;
+}
+
+/* ============================================================
+   Hyperlink extraction — cell.l.Target, HYPERLINK() formulas,
+   or a bare URL sitting in the cell text.
+   ============================================================ */
+function buildLinkMap(ws){
+  const links = {};
+  const ref = ws["!ref"];
+  if(!ref) return links;
+  const range = XLSX.utils.decode_range(ref);
+  for(let R = range.s.r; R <= range.e.r; R++){
+    for(let C = range.s.c; C <= range.e.c; C++){
+      const cell = ws[XLSX.utils.encode_cell({ r:R, c:C })];
+      if(!cell) continue;
+      let target = null;
+      if(cell.l && cell.l.Target) target = cell.l.Target;
+      if(!target && cell.f){
+        const m = /HYPERLINK\s*\(\s*"([^"]+)"/i.exec(cell.f);
+        if(m) target = m[1];
+      }
+      if(!target){
+        const txt = String(cell.w != null ? cell.w : (cell.v != null ? cell.v : "")).trim();
+        if(/^(https?:\/\/|www\.)\S+$/i.test(txt)) target = txt;
+      }
+      if(target) links[R + "," + C] = target;
+    }
+  }
+  return links;
+}
+
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+function fmtDate(v){
+  if(v instanceof Date && !isNaN(v)){
+    const d = String(v.getDate()).padStart(2, "0");
+    return d + "-" + MONTHS[v.getMonth()] + "-" + String(v.getFullYear()).slice(-2);
+  }
+  return String(v == null ? "" : v).trim();
+}
+
+/* status buckets */
+function statusClass(raw){
+  const n = norm(raw);
+  if(!n) return "hold";
+  if(/(reopen|rejected|failed)/.test(n)) return "reopen";
+  if(/(closed|completed|done|resolved|fixed|delivered|verified)/.test(n)) return "done";
+  if(/(progress|wip|ongoing|development|working|testing|review)/.test(n)) return "progress";
+  if(/(hold|pending|waiting|blocked|deferred)/.test(n)) return "hold";
+  if(/(open|new|assigned|raised)/.test(n)) return "open";
+  return "hold";
+}
+
+/* ============================================================
+   Parsing
+   ============================================================ */
+function parseSheet(ws){
+  const grid = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:"", blankrows:false, cellDates:true });
+  if(!grid.length) throw new Error("That sheet is empty.");
+
+  // re-read with real Date objects so date cells format consistently
+  const gridTyped = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:"", blankrows:false, cellDates:true });
+
+  const hIdx = findHeaderRow(grid);
+  const header = grid[hIdx];
+  const { map, extras } = mapHeaders(header);
+
+  if(map.taskName === undefined && map.description === undefined){
+    throw new Error("Couldn't find a Task Name or Description column in this sheet. Check that the header row is present, or pick a different sheet.");
+  }
+
+  const links = buildLinkMap(ws);
+  const rows = [];
+
+  for(let r = hIdx + 1; r < grid.length; r++){
+    const line = grid[r], typed = gridTyped[r] || [];
+    const val = k => (map[k] === undefined ? "" : String(line[map[k]] == null ? "" : line[map[k]]).trim());
+
+    const rec = {
+      sno: val("sno") || String(rows.length + 1),
+      reportedOn: map.reportedOn === undefined ? "" : fmtDate(typed[map.reportedOn] || line[map.reportedOn]),
+      project: val("project"),
+      section: val("section"),
+      taskName: val("taskName"),
+      description: val("description"),
+      ticketNature: val("ticketNature"),
+      status: val("status"),
+      attachText: val("attachment"),
+      attachHref: map.attachment === undefined ? "" : (links[r + "," + map.attachment] || ""),
+      extras: extras.map(e => String(line[e.index] == null ? "" : line[e.index]).trim())
+    };
+
+    // skip fully blank rows and repeated header rows
+    const meaningful = rec.taskName || rec.description || rec.project || rec.section;
+    if(!meaningful) continue;
+    if(norm(rec.taskName) === "taskname") continue;
+
+    rows.push(rec);
+  }
+
+  if(!rows.length) throw new Error("No task rows found under the header in this sheet.");
+  return { rows, extras };
+}
+
+/* ============================================================
+   Rendering
+   ============================================================ */
+const esc = s => String(s == null ? "" : s)
+  .replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;")
+  .replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+
+function safeHref(u){
+  const t = String(u || "").trim();
+  if(!t) return "";
+  if(/^(https?:|mailto:|tel:)/i.test(t)) return t;
+  if(/^www\./i.test(t)) return "https://" + t;
+  if(/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(t)) return "https://" + t;
+  return "";
+}
+
+function chipsHtml(v){
+  const parts = String(v || "").split(/[,;\/|]+/).map(s => s.trim()).filter(Boolean);
+  if(!parts.length) return '<span class="chip">—</span>';
+  return '<div class="chips">' + parts.map(p => '<span class="chip">' + esc(p) + '</span>').join("") + '</div>';
+}
+
+function rowHtml(r, extras){
+  const sc = statusClass(r.status);
+  const href = safeHref(r.attachHref);
+  const label = r.attachText || "View Link";
+  const attach = href
+    ? '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer">' + esc(label) + '</a>'
+    : (r.attachText ? esc(r.attachText) : '<span class="none">—</span>');
+
+  const hay = esc([r.sno, r.reportedOn, r.project, r.section, r.taskName, r.description, r.ticketNature, r.status].join(" ").toLowerCase());
+
+  let html = '<tr class="st-' + sc + '"'
+    + ' data-project="' + esc(r.project) + '"'
+    + ' data-status="' + esc(r.status) + '"'
+    + ' data-nature="' + esc(r.ticketNature) + '"'
+    + ' data-search="' + hay + '">'
+    + '<td class="sno">' + esc(r.sno) + '</td>'
+    + '<td class="date">' + esc(r.reportedOn || "—") + '</td>'
+    + '<td>' + chipsHtml(r.project) + '</td>'
+    + '<td class="section">' + esc(r.section || "—") + '</td>'
+    + '<td class="task">' + esc(r.taskName || "—") + '</td>'
+    + '<td class="desc">' + esc(r.description || "—") + '</td>'
+    + '<td>' + (r.ticketNature ? '<span class="nature">' + esc(r.ticketNature) + '</span>' : "—") + '</td>'
+    + '<td><span class="badge b-' + sc + '">' + esc(r.status || "—") + '</span></td>'
+    + '<td class="attach">' + attach + '</td>';
+
+  extras.forEach((e, i) => { html += '<td>' + esc(r.extras[i] || "—") + '</td>'; });
+  return html + '</tr>';
+}
+
+function buildReport(rows, extras, meta){
+  const total = rows.length;
+  const open = rows.filter(r => statusClass(r.status) === "open").length;
+  const prog = rows.filter(r => statusClass(r.status) === "progress").length;
+  const done = rows.filter(r => statusClass(r.status) === "done").length;
+
+  const stamp = new Date().toLocaleString(undefined, {
+    day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit"
+  });
+
+  let head = "";
+  ["S.No","Reported On","Project","Section","Task Name","Description","Ticket Nature","Status","Attachment"]
+    .forEach(h => { head += "<th>" + esc(h) + "</th>"; });
+  extras.forEach(e => { head += "<th>" + esc(e.label) + "</th>"; });
+
+  const body = rows.map(r => rowHtml(r, extras)).join("");
+
+  return ''
+  + '<div class="report">'
+  +   '<div class="report-head">'
+  +     '<div><h2>Task Status Report</h2></div>'
+  +     '<div class="stamp">Generated ' + esc(stamp) + '<br>' + total + ' task' + (total === 1 ? "" : "s") + '</div>'
+  +   '</div>'
+  +   '<div class="tallies">'
+  +     '<div class="tally"><div class="n">' + total + '</div><div class="k">Total tasks</div></div>'
+  +     '<div class="tally open"><div class="n">' + open + '</div><div class="k">Open</div></div>'
+  +     '<div class="tally progress"><div class="n">' + prog + '</div><div class="k">In progress</div></div>'
+  +     '<div class="tally done"><div class="n">' + done + '</div><div class="k">Closed</div></div>'
+  +   '</div>'
+  +   '<div class="table-scroll">'
+  +     '<table class="tasks"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
+  +   '</div>'
+  +   (meta.interactive ? '<div id="noMatch" class="empty" style="display:none">No tasks match the current filters.</div>' : '')
+  +   '<div class="report-foot">Attachment links open the source file referenced in the spreadsheet.</div>'
+  + '</div>';
+}
+
+/* ============================================================
+   Filtering (used live, and re-embedded in the download)
+   ============================================================ */
+const FILTER_JS = `
+(function(){
+  var q=document.getElementById('q'),fp=document.getElementById('fProject'),
+      fs=document.getElementById('fStatus'),fn=document.getElementById('fNature'),
+      cnt=document.getElementById('visibleCount');
+  if(!q) return;
+  function apply(){
+    var term=q.value.trim().toLowerCase(),p=fp.value,s=fs.value,n=fn.value,shown=0;
+    var rows=document.querySelectorAll('table.tasks tbody tr');
+    rows.forEach(function(tr){
+      var ok=true;
+      if(term && tr.dataset.search.indexOf(term)===-1) ok=false;
+      if(ok && p && tr.dataset.project.indexOf(p)===-1) ok=false;
+      if(ok && s && tr.dataset.status!==s) ok=false;
+      if(ok && n && tr.dataset.nature!==n) ok=false;
+      tr.style.display=ok?'':'none';
+      if(ok) shown++;
+    });
+    var nm=document.getElementById('noMatch');
+    if(nm) nm.style.display=shown?'none':'block';
+    if(cnt) cnt.textContent='Showing '+shown+' of '+rows.length;
+  }
+  [q,fp,fs,fn].forEach(function(el){ el.addEventListener('input',apply); el.addEventListener('change',apply); });
+  apply();
+})();
+`;
+
+function fillFilters(rows){
+  const projects = new Set(), statuses = new Set(), natures = new Set();
+  rows.forEach(r => {
+    String(r.project || "").split(/[,;\/|]+/).map(s => s.trim()).filter(Boolean).forEach(p => projects.add(p));
+    if(r.status) statuses.add(r.status);
+    if(r.ticketNature) natures.add(r.ticketNature);
+  });
+  const fill = (el, set, all) => {
+    el.innerHTML = '<option value="">' + all + "</option>"
+      + [...set].sort((a,b) => a.localeCompare(b)).map(v => '<option>' + esc(v) + "</option>").join("");
+  };
+  fill(document.getElementById("fProject"), projects, "All projects");
+  fill(document.getElementById("fStatus"), statuses, "All statuses");
+  fill(document.getElementById("fNature"), natures, "All natures");
+}
+
+/* ============================================================
+   Download: self-contained HTML, no dependencies
+   ============================================================ */
+function buildStandalone(){
+  // Rebuilt from the parsed data, not from the DOM, so any filtering
+  // applied in the preview never carries into the downloaded file.
+  const reportHtml = buildReport(ROWS, EXTRA_COLS, {});
+
+  return `<!DOCTYPE html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task Status Report</title>
+<style>
+*{box-sizing:border-box}
+body{margin:0;background:#E9EDF1;color:#16202B;
+  font-family:"Inter","Segoe UI",system-ui,-apple-system,Roboto,Helvetica,Arial,sans-serif;
+  font-size:15px;line-height:1.5;-webkit-font-smoothing:antialiased}
+.wrap{max-width:1400px;margin:0 auto;padding:28px 20px 64px}
+@media print{.wrap{padding:0;max-width:none}}
+${REPORT_CSS}
+</style></head>
+<body><div class="wrap">
+${reportHtml}
+</div>
+</body></html>`;
+}
+
+/* ============================================================
+   Wiring
+   ============================================================ */
+const $ = id => document.getElementById(id);
+
+function showError(msg){
+  const el = $("error");
+  el.textContent = msg;
+  el.classList.remove("hidden");
+}
+function clearError(){ $("error").classList.add("hidden"); }
+
+function renderSheet(name){
+  try{
+    const ws = WORKBOOK.Sheets[name];
+    const { rows, extras } = parseSheet(ws);
+    ROWS = rows; EXTRA_COLS = extras;
+    $("reportHost").innerHTML = buildReport(ROWS, EXTRA_COLS, { interactive: true });
+    fillFilters(ROWS);
+    // (re)attach filter behaviour
+    const s = document.createElement("script");
+    s.textContent = FILTER_JS;
+    document.body.appendChild(s);
+    document.body.removeChild(s);
+    clearError();
+  }catch(e){
+    $("reportHost").innerHTML = "";
+    showError(e.message || String(e));
+  }
+}
+
+function loadWorkbook(wb, name){
+  WORKBOOK = wb; SOURCE_NAME = name;
+  $("fileName").textContent = name;
+  $("dropzone").classList.add("hidden");
+  $("controls").classList.remove("hidden");
+
+  const wrap = $("sheetWrap");
+  if(wb.SheetNames.length > 1){
+    wrap.innerHTML = ' · sheet <select id="sheetSel" style="font:inherit;font-size:13px;padding:3px 6px;border:1px solid #D8DFE6;border-radius:6px">'
+      + wb.SheetNames.map(n => '<option>' + esc(n) + "</option>").join("") + "</select>";
+    $("sheetSel").addEventListener("change", e => renderSheet(e.target.value));
+  }else{
+    wrap.innerHTML = "";
+  }
+  renderSheet(wb.SheetNames[0]);
+}
+
+function handleFile(file){
+  if(!file) return;
+  const reader = new FileReader();
+  reader.onload = e => {
+    try{
+      const wb = XLSX.read(new Uint8Array(e.target.result), { type:"array", cellDates:true, cellFormula:true, cellStyles:false });
+      loadWorkbook(wb, file.name);
+    }catch(err){
+      showError("Couldn't read that file. Make sure it's a valid .xlsx, .xls or .csv. (" + (err.message || err) + ")");
+    }
+  };
+  reader.onerror = () => showError("Couldn't read that file from disk.");
+  reader.readAsArrayBuffer(file);
+}
+
+$("pickBtn").addEventListener("click", () => $("fileInput").click());
+$("fileInput").addEventListener("change", e => handleFile(e.target.files[0]));
+
+const dz = $("dropzone");
+["dragenter","dragover"].forEach(t => dz.addEventListener(t, e => { e.preventDefault(); dz.classList.add("hot"); }));
+["dragleave","drop"].forEach(t => dz.addEventListener(t, e => { e.preventDefault(); dz.classList.remove("hot"); }));
+dz.addEventListener("drop", e => handleFile(e.dataTransfer.files[0]));
+
+$("resetBtn").addEventListener("click", () => {
+  WORKBOOK = null; ROWS = []; EXTRA_COLS = [];
+  $("fileInput").value = "";
+  $("reportHost").innerHTML = "";
+  $("controls").classList.add("hidden");
+  $("dropzone").classList.remove("hidden");
+  clearError();
+});
+
+$("printBtn").addEventListener("click", () => window.print());
+
+$("downloadBtn").addEventListener("click", () => {
+  const blob = new Blob([buildStandalone()], { type:"text/html;charset=utf-8" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = "Task_Report_" + new Date().toISOString().slice(0,10) + ".html";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+});
+
+$("sampleBtn").addEventListener("click", () => {
+  const aoa = [
+    ["S.No","Reported On","Project","Section","Task Name","Description","Ticket Nature","Status","Attachment"],
+    [1,"05-Sep-26","IMI, IR, FG, NPD, SprintAI, Dashboards","Profile","Redirection text not same as other sites.","Redirection of profile beta not same as previous sites; alignment, font family, and alignment in centre","Cosmetic","Open","View Link"],
+    [2,"05-Sep-26","IMI, IR","Login","Session expires too early","Users signed out after 5 minutes of inactivity on staging","Functional","In Progress","View Link"],
+    [3,"04-Sep-26","Dashboards","Reports","Export to Excel misses last row","The final record is dropped when exporting filtered results","Functional","Closed","View Link"],
+    [4,"03-Sep-26","SprintAI","Navigation","Breadcrumb overlaps header on tablet","Overlap visible between 768px and 900px widths","Cosmetic","On Hold",""]
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ["I2","I3","I4"].forEach((addr, i) => {
+    ws[addr].l = { Target: "https://example.com/attachments/ticket-" + (i + 1) + ".png", Tooltip: "Open attachment" };
+  });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, "Tasks");
+  loadWorkbook(wb, "sample-tasks.xlsx");
+});
+
+// inject shared report styles
+const st = document.createElement("style");
+st.textContent = REPORT_CSS;
+document.head.appendChild(st);
+</script>
+</body>
+</html>
