@@ -190,6 +190,11 @@ tr.st-reopen td.sno{border-left-color:#B91C1C}
 td.attach a{color:#1F5FA8;text-decoration:none;font-weight:550;border-bottom:1px solid rgba(31,95,168,.3)}
 td.attach a:hover{border-bottom-color:#1F5FA8}
 td.attach .none{color:#9AA7B4}
+td.attach{white-space:nowrap}
+.copy-path{font:inherit;font-size:11px;font-weight:550;margin-left:6px;padding:1px 7px;border:1px solid #D8DFE6;border-radius:4px;background:#FFFFFF;color:#41505F;cursor:pointer}
+.copy-path:hover{border-color:#1F5FA8;color:#1F5FA8}
+.copy-path.ok{border-color:#15803D;color:#15803D}
+@media print{.copy-path{display:none}}
 .empty{padding:44px 26px;text-align:center;color:#5C6B7A;font-size:14px}
 .report-foot{padding:12px 26px;border-top:1px solid #D8DFE6;background:#F7F9FB;font-size:12px;color:#5C6B7A}
 
@@ -223,7 +228,7 @@ const FIELDS = [
   { key:"description",label:"Description",   aliases:["description","details","detail","remarks","comments","observation"] },
   { key:"ticketNature",label:"Ticket Nature",aliases:["ticketnature","nature","type","tickettype","category","severity"] },
   { key:"status",     label:"Status",        aliases:["status","state","currentstatus"] },
-  { key:"attachment", label:"Attachment",    aliases:["attachment","attachments","link","links","viewlink","evidence","screenshot","reference","url"] }
+  { key:"attachment", label:"Attachment",    aliases:["attachment","attachments","attachement","attachements","attach","attachmentlink","link","links","viewlink","evidence","screenshot","reference","url"] }
 ];
 
 const norm = s => String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]/g, "");
@@ -384,10 +389,23 @@ const esc = s => String(s == null ? "" : s)
 function safeHref(u){
   const t = String(u || "").trim();
   if(!t) return "";
-  if(/^(https?:|mailto:|tel:)/i.test(t)) return t;
+  if(/^(https?:|mailto:|tel:|file:)/i.test(t)) return t;
+  // network share \\server\share\path  ->  file://server/share/path
+  if(/^\\\\[^\\]+\\/.test(t)) return "file:" + encodeURI(t.replace(/\\/g, "/"));
+  // local drive path C:\folder\file  ->  file:///C:/folder/file
+  if(/^[a-z]:[\\\/]/i.test(t)) return "file:///" + encodeURI(t.replace(/\\/g, "/"));
   if(/^www\./i.test(t)) return "https://" + t;
   if(/^[\w.-]+\.[a-z]{2,}(\/|$)/i.test(t)) return "https://" + t;
   return "";
+}
+
+// file://server/share/x -> \\server\share\x ; file:///C:/x -> C:\x (for pasting into Explorer)
+function winPathOf(href){
+  if(!/^file:/i.test(href)) return "";
+  let p = href.replace(/^file:\/*/i, "");
+  try{ p = decodeURIComponent(p); }catch(e){}
+  p = p.replace(/\//g, "\\");
+  return /^[a-z]:\\/i.test(p) ? p : "\\\\" + p;
 }
 
 function chipsHtml(v){
@@ -400,8 +418,10 @@ function rowHtml(r, extras){
   const sc = statusClass(r.status);
   const href = safeHref(r.attachHref);
   const label = r.attachText || "View Link";
+  const winPath = winPathOf(href);
   const attach = href
-    ? '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer">' + esc(label) + '</a>'
+    ? '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer"' + (winPath ? ' title="' + esc(winPath) + '"' : '') + '>' + esc(label) + '</a>'
+      + (winPath ? ' <button type="button" class="copy-path" data-path="' + esc(winPath) + '">Copy path</button>' : '')
     : (r.attachText ? esc(r.attachText) : '<span class="none">—</span>');
 
   const hay = esc([r.sno, r.reportedOn, r.project, r.section, r.taskName, r.description, r.ticketNature, r.status].join(" ").toLowerCase());
@@ -492,6 +512,26 @@ const FILTER_JS = `
 })();
 `;
 
+/* "Copy path" buttons — used live, and embedded in the download */
+const COPY_JS = `
+(function(){
+  function fallback(t){
+    var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';
+    document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}
+    document.body.removeChild(ta);
+  }
+  document.addEventListener('click',function(e){
+    var b=e.target.closest&&e.target.closest('.copy-path');
+    if(!b) return;
+    var t=b.getAttribute('data-path');
+    var done=function(){b.textContent='Copied';b.classList.add('ok');
+      setTimeout(function(){b.textContent='Copy path';b.classList.remove('ok');},1500);};
+    if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(done,function(){fallback(t);done();});}
+    else{fallback(t);done();}
+  });
+})();
+`;
+
 function fillFilters(rows){
   const projects = new Set(), statuses = new Set(), natures = new Set();
   rows.forEach(r => {
@@ -532,6 +572,7 @@ ${REPORT_CSS}
 <body><div class="wrap">
 ${reportHtml}
 </div>
+<script>${COPY_JS}<\/script>
 </body></html>`;
 }
 
@@ -647,6 +688,9 @@ $("sampleBtn").addEventListener("click", () => {
 const st = document.createElement("style");
 st.textContent = REPORT_CSS;
 document.head.appendChild(st);
+
+// copy-path buttons in the live preview (delegated, so it survives re-renders)
+new Function(COPY_JS)();
 </script>
 </body>
 </html>
