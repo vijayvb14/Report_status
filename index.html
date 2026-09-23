@@ -112,8 +112,7 @@
   <section id="controls" class="hidden">
     <div class="bar">
       <div class="file">Source: <strong id="fileName">—</strong> <span id="sheetWrap"></span></div>
-      <button id="downloadBtn" class="primary">Download report</button>
-      <button id="printBtn">Print / Save as PDF</button>
+      <button id="downloadBtn" class="primary">Download report</button>      <button id="printBtn">Print / Save as PDF</button>
       <button id="resetBtn" class="ghost">Load another file</button>
     </div>
 
@@ -292,7 +291,7 @@ function buildLinkMap(ws){
       }
       if(!target){
         const txt = String(cell.w != null ? cell.w : (cell.v != null ? cell.v : "")).trim();
-        if(/^(https?:\/\/|www\.)\S+$/i.test(txt)) target = txt;
+        if(/^(https?:\/\/|www\.|file:)\S+$/i.test(txt) || /^\\\\[^\\]+\\\S/.test(txt)) target = txt;
       }
       if(target) links[R + "," + C] = target;
     }
@@ -389,9 +388,16 @@ const esc = s => String(s == null ? "" : s)
 function safeHref(u){
   const t = String(u || "").trim();
   if(!t) return "";
-  if(/^(https?:|mailto:|tel:|file:)/i.test(t)) return t;
-  // network share \\server\share\path  ->  file://server/share/path
-  if(/^\\\\[^\\]+\\/.test(t)) return "file:" + encodeURI(t.replace(/\\/g, "/"));
+  if(/^(https?:|mailto:|tel:)/i.test(t)) return t;
+  if(/^file:/i.test(t)){
+    // local drive: file:///C:/...  — leave as is
+    if(/^file:\/*[a-z]:/i.test(t)) return t.replace(/^file:\/*/i, "file:///");
+    // network share: always file://///server/share/... — Firefox drops the
+    // server name from file://server/share, and Chrome/Edge accept this form too
+    return t.replace(/^file:\/*/i, "file://///");
+  }
+  // network share \\server\share\path  ->  file://///server/share/path
+  if(/^\\\\[^\\]+\\/.test(t)) return "file:///" + encodeURI(t.replace(/\\/g, "/"));
   // local drive path C:\folder\file  ->  file:///C:/folder/file
   if(/^[a-z]:[\\\/]/i.test(t)) return "file:///" + encodeURI(t.replace(/\\/g, "/"));
   if(/^www\./i.test(t)) return "https://" + t;
@@ -417,7 +423,8 @@ function chipsHtml(v){
 function rowHtml(r, extras){
   const sc = statusClass(r.status);
   const href = safeHref(r.attachHref);
-  const label = r.attachText || "View Link";
+  // a pasted path/URL as the cell text makes a poor label
+  const label = (r.attachText && r.attachText !== r.attachHref) ? r.attachText : "View link";
   const winPath = winPathOf(href);
   const attach = href
     ? '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer"' + (winPath ? ' title="' + esc(winPath) + '"' : '') + '>' + esc(label) + '</a>'
@@ -515,19 +522,19 @@ const FILTER_JS = `
 /* "Copy path" buttons — used live, and embedded in the download */
 const COPY_JS = `
 (function(){
-  function fallback(t){
+  function up(el, test){ while(el && el.nodeType === 1){ if(test(el)) return el; el = el.parentNode; } return null; }
+  function copy(t){
+    if(navigator.clipboard && window.isSecureContext){ navigator.clipboard.writeText(t); return; }
     var ta=document.createElement('textarea');ta.value=t;ta.style.position='fixed';ta.style.opacity='0';
     document.body.appendChild(ta);ta.select();try{document.execCommand('copy');}catch(e){}
     document.body.removeChild(ta);
   }
-  document.addEventListener('click',function(e){
-    var b=e.target.closest&&e.target.closest('.copy-path');
+  document.addEventListener('click', function(e){
+    var b = up(e.target, function(el){ return el.classList.contains('copy-path'); });
     if(!b) return;
-    var t=b.getAttribute('data-path');
-    var done=function(){b.textContent='Copied';b.classList.add('ok');
-      setTimeout(function(){b.textContent='Copy path';b.classList.remove('ok');},1500);};
-    if(navigator.clipboard&&window.isSecureContext){navigator.clipboard.writeText(t).then(done,function(){fallback(t);done();});}
-    else{fallback(t);done();}
+    copy(b.getAttribute('data-path'));
+    b.textContent='Copied'; b.classList.add('ok');
+    setTimeout(function(){ b.textContent='Copy path'; b.classList.remove('ok'); },1500);
   });
 })();
 `;
