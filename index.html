@@ -102,7 +102,7 @@
 
   <section id="dropzone" class="drop">
     <h2>Drop your task list here</h2>
-    <p>.xlsx, .xlsm, .xls or .csv — the sheet with S.No, Project, Task Name, Status and Attachment columns.</p>
+    <p>.xlsx, .xlsm, .xls or .csv — the first row is read as the heading and every row below it as data. Up to 10 columns are shown; the rest open under Read more.</p>
     <button class="primary" id="pickBtn">Choose file</button>
     <button class="ghost" id="sampleBtn">Try it with sample data</button>
     <input type="file" id="fileInput" accept=".xlsx,.xlsm,.xls,.csv" hidden>
@@ -194,6 +194,19 @@ td.attach{white-space:nowrap}
 .copy-path:hover{border-color:#1F5FA8;color:#1F5FA8}
 .copy-path.ok{border-color:#15803D;color:#15803D}
 @media print{.copy-path{display:none}}
+th.more-col,td.more-col{width:1%;white-space:nowrap}
+.more-btn{font:inherit;font-size:11.5px;font-weight:600;padding:3px 9px;border:1px solid #D8DFE6;border-radius:4px;background:#FFFFFF;color:#1F5FA8;cursor:pointer;white-space:nowrap}
+.more-btn:hover{border-color:#1F5FA8}
+tr.more-row{display:none}
+tr.more-row.open{display:table-row}
+tr.more-row td{background:#F7F9FB;padding:14px 18px 16px 22px;border-bottom:1px solid #D8DFE6}
+table.tasks tbody tr.more-row:hover td{background:#F7F9FB}
+.more-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px 24px;margin:0}
+.more-grid div{min-width:0}
+.more-grid dt{font-size:11.5px;font-weight:600;color:#5C6B7A;text-transform:uppercase;letter-spacing:.03em;margin-bottom:2px}
+.more-grid dd{margin:0;font-size:13.5px;color:#16202B;overflow-wrap:anywhere}
+.more-grid dd a{color:#1F5FA8;text-decoration:none;font-weight:550;border-bottom:1px solid rgba(31,95,168,.3)}
+@media print{tr.more-row{display:table-row}.more-btn,th.more-col,td.more-col{display:none}}
 .empty{padding:44px 26px;text-align:center;color:#5C6B7A;font-size:14px}
 .report-foot{padding:12px 26px;border-top:1px solid #D8DFE6;background:#F7F9FB;font-size:12px;color:#5C6B7A}
 
@@ -211,92 +224,66 @@ td.attach{white-space:nowrap}
    State
    ============================================================ */
 let WORKBOOK = null;
-let ROWS = [];          // canonical rows
-let EXTRA_COLS = [];    // any unrecognised columns, preserved
+let ROWS = [];          // parsed data rows
+let COLS = [];          // every column found under the heading row
 let SOURCE_NAME = "";
 
+// The table shows at most this many columns. Link columns are always kept;
+// the remaining slots go to the leftmost columns, and everything else is
+// reachable through the "Read more" toggle on each row.
+const MAX_COLS = 10;
+
 /* ============================================================
-   Column mapping
+   Column matching — header text decides how a column renders
    ============================================================ */
 const FIELDS = [
-  { key:"sno",        label:"S.No",          aliases:["sno","sn","sno.","slno","serialno","srno","no","#","id"] },
-  { key:"reportedOn", label:"Reported On",   aliases:["reportedon","reporteddate","date","raisedon","createdon","reported"] },
-  { key:"project",    label:"Project",       aliases:["project","projects","site","sites","application"] },
-  { key:"section",    label:"Section",       aliases:["section","module","page","area","component"] },
-  { key:"taskName",   label:"Task Name",     aliases:["taskname","task","title","summary","issue","subject"] },
-  { key:"description",label:"Description",   aliases:["description","details","detail","remarks","comments","observation"] },
-  { key:"ticketNature",label:"Ticket Nature",aliases:["ticketnature","nature","type","tickettype","category","severity"] },
-  { key:"status",     label:"Status",        aliases:["status","state","currentstatus"] },
-  { key:"attachment", label:"Attachment",    aliases:["attachment","attachments","attachement","attachements","attach","attachmentlink","link","links","viewlink","evidence","screenshot","reference","url"] }
+  { key:"sno",         aliases:["sno","sn","sno.","slno","serialno","srno","no","#","id","sl"] },
+  { key:"reportedOn",  aliases:["reportedon","reporteddate","date","raisedon","createdon","reported"] },
+  { key:"project",     aliases:["project","projects","site","sites","application"] },
+  { key:"section",     aliases:["section","module","page","area","component"] },
+  { key:"taskName",    aliases:["taskname","task","title","summary","issue","subject"] },
+  { key:"description", aliases:["description","details","detail","remarks","comments","observation"] },
+  { key:"ticketNature",aliases:["ticketnature","nature","type","tickettype","category","severity"] },
+  { key:"status",      aliases:["status","state","currentstatus"] },
+  { key:"attachment",  aliases:["attachment","attachments","attachement","attachements","attach","attachmentlink","link","links","viewlink","evidence","screenshot","reference","url"] }
 ];
 
-const norm = s => String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9]/g, "");
+const norm = s => String(s == null ? "" : s).toLowerCase().replace(/[^a-z0-9#]/g, "");
 
-function mapHeaders(headerRow){
-  const map = {}, used = new Set();
-  headerRow.forEach((h, i) => {
-    const n = norm(h);
+// Tags each column with a field key where its header text matches one:
+// exact alias match first, then a loose contains-match for the rest.
+function matchColumns(cols){
+  const taken = new Set();
+  const tryMatch = loose => cols.forEach(col => {
+    if(col.key) return;
+    const n = norm(col.label);
     if(!n) return;
     for(const f of FIELDS){
-      if(map[f.key] !== undefined) continue;
-      if(f.aliases.includes(n)){ map[f.key] = i; used.add(i); return; }
+      if(taken.has(f.key)) continue;
+      const hit = loose
+        ? f.aliases.some(a => a.length > 3 && (n.includes(a) || (n.length > 3 && a.includes(n))))
+        : f.aliases.includes(n);
+      if(hit){ col.key = f.key; taken.add(f.key); return; }
     }
   });
-  // second pass: loose contains-match for anything still unmapped
-  headerRow.forEach((h, i) => {
-    if(used.has(i)) return;
-    const n = norm(h);
-    if(!n) return;
-    for(const f of FIELDS){
-      if(map[f.key] !== undefined) continue;
-      if(f.aliases.some(a => a.length > 3 && (n.includes(a) || a.includes(n)))){
-        map[f.key] = i; used.add(i); return;
-      }
-    }
-  });
-  const extras = [];
-  headerRow.forEach((h, i) => {
-    if(!used.has(i) && String(h || "").trim()) extras.push({ index:i, label:String(h).trim() });
-  });
-  return { map, extras };
-}
-
-function findHeaderRow(grid){
-  const strong = ["taskname","task","status","project","sno","description"];
-  for(let r = 0; r < Math.min(grid.length, 25); r++){
-    const hits = grid[r].filter(c => strong.includes(norm(c))).length;
-    if(hits >= 2) return r;
-  }
-  return 0;
+  tryMatch(false);
+  tryMatch(true);
 }
 
 /* ============================================================
-   Hyperlink extraction — cell.l.Target, HYPERLINK() formulas,
-   or a bare URL sitting in the cell text.
+   Reading cells — text as Excel displays it, plus any hyperlink
+   (cell.l.Target, HYPERLINK() formula, or a bare URL/path).
+   Rows are read straight from the sheet so row numbers never drift.
    ============================================================ */
-function buildLinkMap(ws){
-  const links = {};
-  const ref = ws["!ref"];
-  if(!ref) return links;
-  const range = XLSX.utils.decode_range(ref);
-  for(let R = range.s.r; R <= range.e.r; R++){
-    for(let C = range.s.c; C <= range.e.c; C++){
-      const cell = ws[XLSX.utils.encode_cell({ r:R, c:C })];
-      if(!cell) continue;
-      let target = null;
-      if(cell.l && cell.l.Target) target = cell.l.Target;
-      if(!target && cell.f){
-        const m = /HYPERLINK\s*\(\s*"([^"]+)"/i.exec(cell.f);
-        if(m) target = m[1];
-      }
-      if(!target){
-        const txt = String(cell.w != null ? cell.w : (cell.v != null ? cell.v : "")).trim();
-        if(/^(https?:\/\/|www\.|file:)\S+$/i.test(txt) || /^\\\\[^\\]+\\\S/.test(txt)) target = txt;
-      }
-      if(target) links[R + "," + C] = target;
-    }
+function linkOf(cell, text){
+  if(!cell) return "";
+  if(cell.l && cell.l.Target) return cell.l.Target;
+  if(cell.f){
+    const m = /HYPERLINK\s*\(\s*"([^"]+)"/i.exec(cell.f);
+    if(m) return m[1];
   }
-  return links;
+  if(/^(https?:\/\/|www\.|file:)\S+$/i.test(text) || /^\\\\[^\\]+\\\S/.test(text)) return text;
+  return "";
 }
 
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
@@ -315,6 +302,30 @@ function cellDate(display, typed){
   return "";
 }
 
+function readGrid(ws){
+  const ref = ws["!ref"];
+  if(!ref) return [];
+  const range = XLSX.utils.decode_range(ref);
+  const grid = [];
+  for(let R = range.s.r; R <= range.e.r; R++){
+    const row = [];
+    let any = false;
+    for(let C = range.s.c; C <= range.e.c; C++){
+      const cell = ws[XLSX.utils.encode_cell({ r:R, c:C })];
+      let text = "";
+      if(cell){
+        text = cell.v instanceof Date ? cellDate(cell.w, cell.v)
+             : String(cell.w != null ? cell.w : (cell.v != null ? cell.v : "")).trim();
+      }
+      const href = linkOf(cell, text);
+      if(text || href) any = true;
+      row.push({ text, href });
+    }
+    if(any) grid.push(row);
+  }
+  return grid;
+}
+
 /* status buckets */
 function statusClass(raw){
   const n = norm(raw);
@@ -328,54 +339,61 @@ function statusClass(raw){
 }
 
 /* ============================================================
-   Parsing
+   Parsing — first non-empty row (with 2+ filled cells) is the
+   heading, every row below it is data.
    ============================================================ */
 function parseSheet(ws){
-  const grid = XLSX.utils.sheet_to_json(ws, { header:1, raw:false, defval:"", blankrows:false, cellDates:true });
+  const grid = readGrid(ws);
   if(!grid.length) throw new Error("That sheet is empty.");
 
-  // re-read with real Date objects so date cells format consistently
-  const gridTyped = XLSX.utils.sheet_to_json(ws, { header:1, raw:true, defval:"", blankrows:false, cellDates:true });
-
-  const hIdx = findHeaderRow(grid);
+  let hIdx = grid.findIndex(row => row.filter(c => c.text).length >= 2);
+  if(hIdx === -1) hIdx = 0;
   const header = grid[hIdx];
-  const { map, extras } = mapHeaders(header);
+  const data = grid.slice(hIdx + 1);
+  const width = Math.max(...grid.map(r => r.length));
 
-  if(map.taskName === undefined && map.description === undefined){
-    throw new Error("Couldn't find a Task Name or Description column in this sheet. Check that the header row is present, or pick a different sheet.");
+  // one column per heading cell; unlabeled columns are kept only if they hold data
+  const cols = [];
+  for(let c = 0; c < width; c++){
+    const label = header[c] ? header[c].text : "";
+    const filled = data.filter(r => r[c] && (r[c].text || r[c].href));
+    if(!label && !filled.length) continue;
+    const linked = filled.filter(r => r[c].href).length;
+    cols.push({ index:c, label: label || "Column " + (c + 1), key:null, linked, filled: filled.length });
   }
+  matchColumns(cols);
+  cols.forEach(col => {
+    col.isLink = col.key === "attachment" || (col.linked > 0 && col.linked >= col.filled / 2);
+    col.isDate = col.key === "reportedOn" || /date/.test(norm(col.label));
+  });
 
-  const links = buildLinkMap(ws);
+  const headerSig = header.map(c => norm(c.text)).join("|");
+  const byKey = k => cols.find(c => c.key === k);
   const rows = [];
+  data.forEach(line => {
+    if(line.map(c => norm(c.text)).join("|") === headerSig) return;   // repeated heading row
+    const cells = cols.map(col => line[col.index] || { text:"", href:"" });
+    if(!cells.some(c => c.text || c.href)) return;
+    const field = k => { const col = byKey(k); return col ? cells[cols.indexOf(col)].text : ""; };
+    rows.push({
+      cells,
+      project: field("project"),
+      status: field("status"),
+      ticketNature: field("ticketNature")
+    });
+  });
 
-  for(let r = hIdx + 1; r < grid.length; r++){
-    const line = grid[r], typed = gridTyped[r] || [];
-    const val = k => (map[k] === undefined ? "" : String(line[map[k]] == null ? "" : line[map[k]]).trim());
+  if(!rows.length) throw new Error("No data rows found under the heading row in this sheet.");
+  return { rows, cols };
+}
 
-    const rec = {
-      sno: val("sno") || String(rows.length + 1),
-      reportedOn: map.reportedOn === undefined ? "" : cellDate(line[map.reportedOn], typed[map.reportedOn]),
-      project: val("project"),
-      section: val("section"),
-      taskName: val("taskName"),
-      description: val("description"),
-      ticketNature: val("ticketNature"),
-      status: val("status"),
-      attachText: val("attachment"),
-      attachHref: map.attachment === undefined ? "" : (links[r + "," + map.attachment] || ""),
-      extras: extras.map(e => String(line[e.index] == null ? "" : line[e.index]).trim())
-    };
-
-    // skip fully blank rows and repeated header rows
-    const meaningful = rec.taskName || rec.description || rec.project || rec.section;
-    if(!meaningful) continue;
-    if(norm(rec.taskName) === "taskname") continue;
-
-    rows.push(rec);
-  }
-
-  if(!rows.length) throw new Error("No task rows found under the header in this sheet.");
-  return { rows, extras };
+// Up to MAX_COLS columns in sheet order: every link column is kept, the
+// rest are filled from the left, and the columns in between are dropped.
+function pickVisible(cols){
+  if(cols.length <= MAX_COLS) return cols.slice();
+  const links = cols.filter(c => c.isLink).slice(0, MAX_COLS);
+  const lead = cols.filter(c => !c.isLink).slice(0, MAX_COLS - links.length);
+  return cols.filter(c => links.includes(c) || lead.includes(c));
 }
 
 /* ============================================================
@@ -420,77 +438,103 @@ function chipsHtml(v){
   return '<div class="chips">' + parts.map(p => '<span class="chip">' + esc(p) + '</span>').join("") + '</div>';
 }
 
-function rowHtml(r, extras){
-  const sc = statusClass(r.status);
-  const href = safeHref(r.attachHref);
+function linkHtml(cell){
+  const href = safeHref(cell.href);
+  if(!href) return cell.text ? esc(cell.text) : '<span class="none">—</span>';
   // a pasted path/URL as the cell text makes a poor label
-  const label = (r.attachText && r.attachText !== r.attachHref) ? r.attachText : "View link";
+  const label = (cell.text && cell.text !== cell.href) ? cell.text : "View link";
   const winPath = winPathOf(href);
-  const attach = href
-    ? '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer"' + (winPath ? ' title="' + esc(winPath) + '"' : '') + '>' + esc(label) + '</a>'
-      + (winPath ? ' <button type="button" class="copy-path" data-path="' + esc(winPath) + '">Copy path</button>' : '')
-    : (r.attachText ? esc(r.attachText) : '<span class="none">—</span>');
+  return '<a href="' + esc(href) + '" target="_blank" rel="noopener noreferrer"' + (winPath ? ' title="' + esc(winPath) + '"' : '') + '>' + esc(label) + '</a>'
+    + (winPath ? ' <button type="button" class="copy-path" data-path="' + esc(winPath) + '">Copy path</button>' : '');
+}
 
-  const hay = esc([r.sno, r.reportedOn, r.project, r.section, r.taskName, r.description, r.ticketNature, r.status].join(" ").toLowerCase());
+// Returns [td class, inner html] for one cell, styled by the column it sits in.
+function cellParts(col, cell){
+  const t = cell.text;
+  if(col.isLink || safeHref(cell.href)) return ["attach", linkHtml(cell)];
+  if(!t) return [col.key === "sno" ? "sno" : "", "—"];
+  switch(col.key){
+    case "sno":          return ["sno", esc(t)];
+    case "project":      return ["", chipsHtml(t)];
+    case "section":      return ["section", esc(t)];
+    case "taskName":     return ["task", esc(t)];
+    case "description":  return ["desc", esc(t)];
+    case "ticketNature": return ["", '<span class="nature">' + esc(t) + '</span>'];
+    case "status":       return ["", '<span class="badge b-' + statusClass(t) + '">' + esc(t) + '</span>'];
+  }
+  return [col.isDate ? "date" : "", esc(t)];
+}
 
-  let html = '<tr class="st-' + sc + '"'
+function rowHtml(r, cols, visible, hidden, hasStatus){
+  const hay = esc(r.cells.map(c => c.text).join(" ").toLowerCase());
+  const cls = "data-row" + (hasStatus ? " st-" + statusClass(r.status) : "");
+
+  let html = '<tr class="' + cls + '"'
     + ' data-project="' + esc(r.project) + '"'
     + ' data-status="' + esc(r.status) + '"'
     + ' data-nature="' + esc(r.ticketNature) + '"'
-    + ' data-search="' + hay + '">'
-    + '<td class="sno">' + esc(r.sno) + '</td>'
-    + '<td class="date">' + esc(r.reportedOn || "—") + '</td>'
-    + '<td>' + chipsHtml(r.project) + '</td>'
-    + '<td class="section">' + esc(r.section || "—") + '</td>'
-    + '<td class="task">' + esc(r.taskName || "—") + '</td>'
-    + '<td class="desc">' + esc(r.description || "—") + '</td>'
-    + '<td>' + (r.ticketNature ? '<span class="nature">' + esc(r.ticketNature) + '</span>' : "—") + '</td>'
-    + '<td><span class="badge b-' + sc + '">' + esc(r.status || "—") + '</span></td>'
-    + '<td class="attach">' + attach + '</td>';
+    + ' data-search="' + hay + '">';
+  visible.forEach(col => {
+    const [c, inner] = cellParts(col, r.cells[cols.indexOf(col)]);
+    html += '<td' + (c ? ' class="' + c + '"' : '') + '>' + inner + '</td>';
+  });
+  if(!hidden.length) return html + '</tr>';
 
-  extras.forEach((e, i) => { html += '<td>' + esc(r.extras[i] || "—") + '</td>'; });
-  return html + '</tr>';
+  html += '<td class="more-col"><button type="button" class="more-btn" aria-expanded="false">Read more</button></td></tr>';
+  html += '<tr class="more-row"><td colspan="' + (visible.length + 1) + '"><dl class="more-grid">';
+  hidden.forEach(col => {
+    const [, inner] = cellParts(col, r.cells[cols.indexOf(col)]);
+    html += '<div><dt>' + esc(col.label) + '</dt><dd>' + inner + '</dd></div>';
+  });
+  return html + '</dl></td></tr>';
 }
 
-function buildReport(rows, extras, meta){
+function buildReport(rows, cols, meta){
+  const visible = pickVisible(cols);
+  const hidden = cols.filter(c => !visible.includes(c));
+  const hasStatus = cols.some(c => c.key === "status");
+
   const total = rows.length;
-  const open = rows.filter(r => statusClass(r.status) === "open").length;
-  const prog = rows.filter(r => statusClass(r.status) === "progress").length;
-  const done = rows.filter(r => statusClass(r.status) === "done").length;
+  const count = b => rows.filter(r => statusClass(r.status) === b).length;
 
   const stamp = new Date().toLocaleString(undefined, {
     day:"2-digit", month:"short", year:"numeric", hour:"2-digit", minute:"2-digit"
   });
 
   let head = "";
-  ["S.No","Reported On","Project","Section","Task Name","Description","Ticket Nature","Status","Attachment"]
-    .forEach(h => { head += "<th>" + esc(h) + "</th>"; });
-  extras.forEach(e => { head += "<th>" + esc(e.label) + "</th>"; });
+  visible.forEach(col => { head += "<th>" + esc(col.label) + "</th>"; });
+  if(hidden.length) head += '<th class="more-col"></th>';
 
-  const body = rows.map(r => rowHtml(r, extras)).join("");
+  const body = rows.map(r => rowHtml(r, cols, visible, hidden, hasStatus)).join("");
+
+  const note = hidden.length
+    ? "Showing " + visible.length + " of " + cols.length + " columns. Use Read more on a row to see the other " + hidden.length + ". "
+    : "";
 
   return ''
   + '<div class="report">'
   +   '<div class="report-head">'
   +     '<div><h2>Task Status Report</h2></div>'
-  +     '<div class="stamp">Generated ' + esc(stamp) + '<br>' + total + ' task' + (total === 1 ? "" : "s") + '</div>'
+  +     '<div class="stamp">Generated ' + esc(stamp) + '<br>' + total + ' row' + (total === 1 ? "" : "s") + '</div>'
   +   '</div>'
   +   '<div class="tallies">'
   +     '<div class="tally"><div class="n">' + total + '</div><div class="k">Total tasks</div></div>'
-  +     '<div class="tally open"><div class="n">' + open + '</div><div class="k">Open</div></div>'
-  +     '<div class="tally progress"><div class="n">' + prog + '</div><div class="k">In progress</div></div>'
-  +     '<div class="tally done"><div class="n">' + done + '</div><div class="k">Closed</div></div>'
+  +     (hasStatus
+          ? '<div class="tally open"><div class="n">' + count("open") + '</div><div class="k">Open</div></div>'
+          + '<div class="tally progress"><div class="n">' + count("progress") + '</div><div class="k">In progress</div></div>'
+          + '<div class="tally done"><div class="n">' + count("done") + '</div><div class="k">Closed</div></div>'
+          : '')
   +   '</div>'
   +   '<div class="table-scroll">'
   +     '<table class="tasks"><thead><tr>' + head + '</tr></thead><tbody>' + body + '</tbody></table>'
   +   '</div>'
   +   (meta.interactive ? '<div id="noMatch" class="empty" style="display:none">No tasks match the current filters.</div>' : '')
-  +   '<div class="report-foot">Attachment links open the source file referenced in the spreadsheet.</div>'
+  +   '<div class="report-foot">' + note + 'Attachment links open the source file referenced in the spreadsheet.</div>'
   + '</div>';
 }
 
 /* ============================================================
-   Filtering (used live, and re-embedded in the download)
+   Filtering (used live in the preview)
    ============================================================ */
 const FILTER_JS = `
 (function(){
@@ -500,7 +544,7 @@ const FILTER_JS = `
   if(!q) return;
   function apply(){
     var term=q.value.trim().toLowerCase(),p=fp.value,s=fs.value,n=fn.value,shown=0;
-    var rows=document.querySelectorAll('table.tasks tbody tr');
+    var rows=document.querySelectorAll('table.tasks tbody tr.data-row');
     rows.forEach(function(tr){
       var ok=true;
       if(term && tr.dataset.search.indexOf(term)===-1) ok=false;
@@ -508,6 +552,8 @@ const FILTER_JS = `
       if(ok && s && tr.dataset.status!==s) ok=false;
       if(ok && n && tr.dataset.nature!==n) ok=false;
       tr.style.display=ok?'':'none';
+      var more=tr.nextElementSibling;
+      if(more && more.classList.contains('more-row')) more.style.display=ok?'':'none';
       if(ok) shown++;
     });
     var nm=document.getElementById('noMatch');
@@ -519,7 +565,7 @@ const FILTER_JS = `
 })();
 `;
 
-/* "Copy path" buttons — used live, and embedded in the download */
+/* "Copy path" and "Read more" buttons — used live, and embedded in the download */
 const COPY_JS = `
 (function(){
   function up(el, test){ while(el && el.nodeType === 1){ if(test(el)) return el; el = el.parentNode; } return null; }
@@ -530,6 +576,14 @@ const COPY_JS = `
     document.body.removeChild(ta);
   }
   document.addEventListener('click', function(e){
+    var m = up(e.target, function(el){ return el.classList.contains('more-btn'); });
+    if(m){
+      var row = up(m, function(el){ return el.tagName === 'TR'; }).nextElementSibling;
+      var open = row.classList.toggle('open');
+      m.textContent = open ? 'Show less' : 'Read more';
+      m.setAttribute('aria-expanded', open ? 'true' : 'false');
+      return;
+    }
     var b = up(e.target, function(el){ return el.classList.contains('copy-path'); });
     if(!b) return;
     copy(b.getAttribute('data-path'));
@@ -539,20 +593,24 @@ const COPY_JS = `
 })();
 `;
 
-function fillFilters(rows){
+// Fills each filter from its column; filters with no matching column are hidden.
+function fillFilters(rows, cols){
   const projects = new Set(), statuses = new Set(), natures = new Set();
   rows.forEach(r => {
     String(r.project || "").split(/[,;\/|]+/).map(s => s.trim()).filter(Boolean).forEach(p => projects.add(p));
     if(r.status) statuses.add(r.status);
     if(r.ticketNature) natures.add(r.ticketNature);
   });
-  const fill = (el, set, all) => {
+  const fill = (id, key, set, all) => {
+    const el = document.getElementById(id);
+    el.value = "";
     el.innerHTML = '<option value="">' + all + "</option>"
       + [...set].sort((a,b) => a.localeCompare(b)).map(v => '<option>' + esc(v) + "</option>").join("");
+    el.parentNode.classList.toggle("hidden", !cols.some(c => c.key === key));
   };
-  fill(document.getElementById("fProject"), projects, "All projects");
-  fill(document.getElementById("fStatus"), statuses, "All statuses");
-  fill(document.getElementById("fNature"), natures, "All natures");
+  fill("fProject", "project", projects, "All projects");
+  fill("fStatus", "status", statuses, "All statuses");
+  fill("fNature", "ticketNature", natures, "All natures");
 }
 
 /* ============================================================
@@ -561,7 +619,7 @@ function fillFilters(rows){
 function buildStandalone(){
   // Rebuilt from the parsed data, not from the DOM, so any filtering
   // applied in the preview never carries into the downloaded file.
-  const reportHtml = buildReport(ROWS, EXTRA_COLS, {});
+  const reportHtml = buildReport(ROWS, COLS, {});
 
   return `<!DOCTYPE html>
 <html lang="en"><head><meta charset="utf-8">
@@ -598,10 +656,11 @@ function clearError(){ $("error").classList.add("hidden"); }
 function renderSheet(name){
   try{
     const ws = WORKBOOK.Sheets[name];
-    const { rows, extras } = parseSheet(ws);
-    ROWS = rows; EXTRA_COLS = extras;
-    $("reportHost").innerHTML = buildReport(ROWS, EXTRA_COLS, { interactive: true });
-    fillFilters(ROWS);
+    const { rows, cols } = parseSheet(ws);
+    ROWS = rows; COLS = cols;
+    $("q").value = "";
+    $("reportHost").innerHTML = buildReport(ROWS, COLS, { interactive: true });
+    fillFilters(ROWS, COLS);
     // (re)attach filter behaviour
     const s = document.createElement("script");
     s.textContent = FILTER_JS;
@@ -655,7 +714,7 @@ const dz = $("dropzone");
 dz.addEventListener("drop", e => handleFile(e.dataTransfer.files[0]));
 
 $("resetBtn").addEventListener("click", () => {
-  WORKBOOK = null; ROWS = []; EXTRA_COLS = [];
+  WORKBOOK = null; ROWS = []; COLS = [];
   $("fileInput").value = "";
   $("reportHost").innerHTML = "";
   $("controls").classList.add("hidden");
@@ -674,16 +733,17 @@ $("downloadBtn").addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(a.href), 4000);
 });
 
+// 12 columns with the link in column 12, to show the 10-column rule and Read more
 $("sampleBtn").addEventListener("click", () => {
   const aoa = [
-    ["S.No","Reported On","Project","Section","Task Name","Description","Ticket Nature","Status","Attachment"],
-    [1,"05-Sep-26","IMI, IR, FG, NPD, SprintAI, Dashboards","Profile","Redirection text not same as other sites.","Redirection of profile beta not same as previous sites; alignment, font family, and alignment in centre","Cosmetic","Open","View Link"],
-    [2,"05-Sep-26","IMI, IR","Login","Session expires too early","Users signed out after 5 minutes of inactivity on staging","Functional","In Progress","View Link"],
-    [3,"04-Sep-26","Dashboards","Reports","Export to Excel misses last row","The final record is dropped when exporting filtered results","Functional","Closed","View Link"],
-    [4,"03-Sep-26","SprintAI","Navigation","Breadcrumb overlaps header on tablet","Overlap visible between 768px and 900px widths","Cosmetic","On Hold",""]
+    ["S.No","Reported On","Project","Section","Task Name","Description","Ticket Nature","Status","Assigned To","Priority","Remarks","View Link"],
+    [1,"05-Sep-26","IMI, IR, FG, NPD, SprintAI, Dashboards","Profile","Redirection text not same as other sites.","Redirection of profile beta not same as previous sites; alignment, font family, and alignment in centre","Cosmetic","Open","Priya","Medium","Check on all six sites","View Link"],
+    [2,"05-Sep-26","IMI, IR","Login","Session expires too early","Users signed out after 5 minutes of inactivity on staging","Functional","In Progress","Arun","High","Staging only","View Link"],
+    [3,"04-Sep-26","Dashboards","Reports","Export to Excel misses last row","The final record is dropped when exporting filtered results","Functional","Closed","Meena","High","Verified in build 4.2","View Link"],
+    [4,"03-Sep-26","SprintAI","Navigation","Breadcrumb overlaps header on tablet","Overlap visible between 768px and 900px widths","Cosmetic","On Hold","Karthik","Low","",""]
   ];
   const ws = XLSX.utils.aoa_to_sheet(aoa);
-  ["I2","I3","I4"].forEach((addr, i) => {
+  ["L2","L3","L4"].forEach((addr, i) => {
     ws[addr].l = { Target: "https://example.com/attachments/ticket-" + (i + 1) + ".png", Tooltip: "Open attachment" };
   });
   const wb = XLSX.utils.book_new();
@@ -696,7 +756,7 @@ const st = document.createElement("style");
 st.textContent = REPORT_CSS;
 document.head.appendChild(st);
 
-// copy-path buttons in the live preview (delegated, so it survives re-renders)
+// copy-path and read-more buttons in the live preview (delegated, so it survives re-renders)
 new Function(COPY_JS)();
 </script>
 </body>
